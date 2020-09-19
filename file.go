@@ -84,7 +84,7 @@ type FileTimeBasedTrigger struct {
 	// Describes the rotation schedule.
 	CronExpression string
 
-	// Clock to wrap stdblib timing functions for testing.
+	// Clock to wrap stdlib timing functions for testing.
 	Clock Clock
 
 	schedule cron.Schedule
@@ -276,12 +276,13 @@ type FileTimestampNameGenerator struct {
 	Format string
 }
 
-// Name generates a new timestamp suffixed name for file at current path.
+// Name generates a new timestamp and index suffixed name for file at current
+// path.
 //
-//     current = application.log, out = application_2020-01-02.log
+//     current = application.log, out = application_2020-01-02.0.log
 //
 // If the directory of the file already has file with same name and suffixed
-// timestamp with indexes, then it returns the file with next available index.
+// timestamp with indexes, then it returns the name with next available index.
 //
 //     dir
 //      |- application_2020-01-02.0.log
@@ -289,20 +290,6 @@ type FileTimestampNameGenerator struct {
 //      |- application_2020-01-02.2.log
 //
 //     current = application.log, out = application_2020-01-02.3.log
-//
-// If the directory of file contains file with same name and and suffixed
-// timestamp without indexes, then it moves the file to correct index, and
-// returns the file with next index.
-//
-//     dir
-//      |- application_2020-01-02.log
-//
-//     current = application.log, out application_2020-01-02.1.log
-//
-//     Afterwards,
-//
-//     dir
-//      |- application_2020-01-02.0.log
 //
 // If there are any, errors while reading the directories, then non-nil error
 // is returned.
@@ -326,21 +313,7 @@ func (g FileTimestampNameGenerator) Name(current string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !g.isPresent(newPath) {
-		if maxIdx != -1 {
-			return g.indexPath(newPath, maxIdx+1), nil
-		}
-		return newPath, nil
-	}
-	if err := fileMove(newPath, g.indexPath(newPath, maxIdx+1), false); err != nil {
-		return "", fmt.Errorf("name gen: %w", err)
-	}
-	return g.indexPath(newPath, maxIdx+2), nil
-}
-
-func (g FileTimestampNameGenerator) isPresent(path string) bool {
-	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
+	return g.indexPath(newPath, maxIdx+1), nil
 }
 
 func (g FileTimestampNameGenerator) indexPath(path string, index int) string {

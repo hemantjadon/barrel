@@ -19,16 +19,7 @@ import (
 
 var (
 	testTime = time.Date(2020, 1, 1, 6, 15, 0, 0, time.UTC)
-	testText = `
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur volutpat eleifend velit, 
-quis elementum metus maximus non. Aliquam rutrum placerat sapien, vitae egestas ante egestas 
-sit amet. Morbi finibus ex eget leo cursus, a porta lorem aliquam. Sed sollicitudin eu purus 
-sit amet lobortis. Nullam nec nulla hendrerit, aliquet magna dictum, facilisis nibh. Duis 
-lacinia nec velit ut consequat. Maecenas vel lobortis erat. Nunc sollicitudin consectetur 
-nulla id hendrerit. Nunc rhoncus eros non efficitur ullamcorper. Pellentesque habitant morbi 
-tristique senectus et netus et malesuada fames ac turpis egestas. Aliquam pulvinar accumsan cursus. 
-Curabitur id orci commodo, viverra elit ut, posuere leo. Cras at dolor arcu. Maecenas efficitur enim 
-commodo turpis efficitur dapibus.`
+	testText = `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur volutpat eleifend velit, quis elementum metus maximus non. Aliquam rutrum placerat sapien, vitae egestas ante egestas sit amet. Morbi finibus ex eget leo cursus, a porta lorem aliquam. Sed sollicitudin eu purus sit amet lobortis. Nullam nec nulla hendrerit, aliquet magna dictum, facilisis nibh. Duis lacinia nec velit ut consequat. Maecenas vel lobortis erat. Nunc sollicitudin consectetur nulla id hendrerit. Nunc rhoncus eros non efficitur ullamcorper. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Aliquam pulvinar accumsan cursus. Curabitur id orci commodo, viverra elit ut, posuere leo. Cras at dolor arcu. Maecenas efficitur enim commodo turpis efficitur dapibus.`
 )
 
 func TestAdaptFileTrigger(t *testing.T) {
@@ -982,7 +973,7 @@ func TestFileTimestampNameGenerator(t *testing.T) {
 			s.And(`format is provided`, func(s *testcase.Spec) {
 				s.Let(`format`, func(t *testcase.T) interface{} { return "01-02-2006" }) // DD-MM-YYYY
 
-				s.Then(`it returns time suffixed name in provided format`, func(t *testcase.T) {
+				s.Then(`it returns time suffixed name with 0 index in default format`, func(t *testcase.T) {
 					got, err := subject(t)
 
 					if err != nil {
@@ -995,7 +986,7 @@ func TestFileTimestampNameGenerator(t *testing.T) {
 
 					format := t.I(`format`).(string)
 
-					want := fmt.Sprintf("%s_%s%s", fileNameBase, testTime.Format(format), fileNameExt)
+					want := fmt.Sprintf("%s_%s.0%s", fileNameBase, testTime.Format(format), fileNameExt)
 
 					if got != want {
 						t.Errorf("got = %v, want = %v", got, want)
@@ -1006,7 +997,7 @@ func TestFileTimestampNameGenerator(t *testing.T) {
 			s.And(`format is not provided`, func(s *testcase.Spec) {
 				s.Let(`format`, func(t *testcase.T) interface{} { return "" })
 
-				s.Then(`it returns time suffixed name in default format`, func(t *testcase.T) {
+				s.Then(`it returns time suffixed name with 0 index in default format`, func(t *testcase.T) {
 					got, err := subject(t)
 
 					if err != nil {
@@ -1019,80 +1010,12 @@ func TestFileTimestampNameGenerator(t *testing.T) {
 
 					format := "2006-02-01" // Default format
 
-					want := fmt.Sprintf("%s_%s%s", fileNameBase, testTime.Format(format), fileNameExt)
+					want := fmt.Sprintf("%s_%s.0%s", fileNameBase, testTime.Format(format), fileNameExt)
 
 					if got != want {
 						t.Errorf("got = %v, want = %v", got, want)
 					}
 				})
-			})
-		})
-
-		s.When(`directory of file already contain a file with same time suffixed name`, func(s *testcase.Spec) {
-			s.Before(func(t *testcase.T) {
-				testDir := t.I(`testDir`).(string)
-				filename := filepath.Join(testDir, fmt.Sprintf("application_2020-01-01.log"))
-				file, err := os.Create(filename)
-				if err != nil {
-					t.Fatalf("os create file: %v", err)
-				}
-				defer func() { _ = file.Close() }()
-			})
-
-			s.Let(`currentName`, func(t *testcase.T) interface{} {
-				testDir := t.I(`testDir`).(string)
-				filename := filepath.Join(testDir, "application.log")
-				file, err := os.Create(filename)
-				if err != nil {
-					t.Fatalf("os create file: %v", err)
-				}
-				defer func() { _ = file.Close() }()
-				if err := os.Chtimes(filename, testTime, testTime); err != nil {
-					t.Fatalf("os chtimes: %v", err)
-				}
-				return filename
-			})
-
-			s.Let(`format`, func(t *testcase.T) interface{} { return "" }) // Default format YYYY-MM-DD
-
-			s.Then(`it returns max index plus 2 indexed time suffixed name`, func(t *testcase.T) {
-				got, err := subject(t)
-
-				if err != nil {
-					t.Errorf("got err = %v, want err = %v", err, nil)
-				}
-
-				filename := t.I(`currentName`).(string)
-				fileNameExt := filepathFullExt(filename)
-				fileNameBase := filepathStripFullExt(filename)
-
-				format := "2006-02-01" // Default format
-
-				want := fmt.Sprintf("%s_%s.1%s", fileNameBase, testTime.Format(format), fileNameExt)
-
-				if got != want {
-					t.Errorf("got = %v, want = %v", got, want)
-				}
-			})
-
-			s.Then(`it moves the existing file to max index plus 1 indexed time suffixed name`, func(t *testcase.T) {
-				_, err := subject(t)
-
-				if err != nil {
-					t.Errorf("got err = %v, want err = %v", err, nil)
-				}
-
-				filename := t.I(`currentName`).(string)
-				fileNameExt := filepathFullExt(filename)
-				fileNameBase := filepathStripFullExt(filename)
-
-				format := "2006-02-01" // Default format
-
-				existingFileNewName := fmt.Sprintf("%s_%s.0%s", fileNameBase, testTime.Format(format), fileNameExt)
-
-				if _, err := os.Stat(existingFileNewName); err != nil {
-					t.Errorf("existing file not moved to correct name")
-				}
 			})
 		})
 
@@ -1141,7 +1064,7 @@ func TestFileTimestampNameGenerator(t *testing.T) {
 
 			s.Let(`format`, func(t *testcase.T) interface{} { return "" }) // Default format YYYY-MM-DD
 
-			s.Then(`it returns max index plus 2 indexed time suffixed name`, func(t *testcase.T) {
+			s.Then(`it returns max index plus 1 indexed time suffixed name`, func(t *testcase.T) {
 				got, err := subject(t)
 
 				if err != nil {
