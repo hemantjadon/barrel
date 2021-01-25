@@ -6,318 +6,241 @@ import (
 	"io"
 	"testing"
 
-	"github.com/adamluzsi/testcase"
+	"github.com/matryer/is"
 )
 
-func TestRollingWriter(t *testing.T) {
-	s := testcase.NewSpec(t)
-	s.Describe(`Write`, SpecRollingWriterWrite)
-	s.Describe(`Close`, SpecRollingWriterClose)
+//go:generate moq -fmt goimports -out ./barrel_test_mock_test.go . Trigger Rotator
+
+func TestRollingWriter_Write(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closed writer", func(t *testing.T) {
+		t.Parallel()
+		r := is.New(t)
+
+		writer := RollingWriter{}
+		err := writer.Close()
+		r.NoErr(err) // should not be any error
+
+		_, err = writer.Write([]byte("hello"))
+		r.True(errors.Is(err, ErrClosed)) // error should wrap ErrClosed
+	})
+
+	t.Run("trigger errors", func(t *testing.T) {
+		t.Parallel()
+		r := is.New(t)
+
+		writer := RollingWriter{Trigger: faultyTrigger(errTrigger)}
+
+		_, err := writer.Write([]byte("hello"))
+		r.True(errors.Is(err, errTrigger)) // error should wrap underlying Trigger error
+	})
+
+	t.Run("trigger returns false", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("underlying writer errors", func(t *testing.T) {
+			t.Parallel()
+			r := is.New(t)
+
+			writer := RollingWriter{Writer: faultyWriter{Err: errWrite}, Trigger: fixedTrigger(false)}
+
+			data := []byte("hello")
+			_, err := writer.Write(data)
+			r.True(errors.Is(err, errWrite)) // error should wrap underlying io.Writer error
+		})
+
+		t.Run("underlying writer succeeds", func(t *testing.T) {
+			t.Parallel()
+			r := is.New(t)
+
+			var buf bytes.Buffer
+
+			writer := RollingWriter{Writer: &buf, Trigger: fixedTrigger(false)}
+
+			data := []byte("hello")
+			n, err := writer.Write(data)
+			r.NoErr(err) //should not be any error
+
+			r.True(n == len(data))                 // all bytes should be written
+			r.True(n == len(buf.Bytes()))          // all bytes should be written to underlying io.Writer
+			r.True(bytes.Equal(buf.Bytes(), data)) // bytes written io.Writer should be same as given bytes
+		})
+	})
+
+	t.Run("trigger returns true", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("rotator errors", func(t *testing.T) {
+			t.Parallel()
+			r := is.New(t)
+
+			var buf1 bytes.Buffer
+
+			writer := RollingWriter{Writer: &buf1, Trigger: fixedTrigger(true), Rotator: faultyRotator(errRotate)}
+
+			data := []byte("hello")
+			n, err := writer.Write(data)
+			r.True(errors.Is(err, errRotate)) // error should wrap underlying Rotator error
+
+			r.True(n == 0)                 // no bytes should be written
+			r.True(len(buf1.Bytes()) == 0) // original io.Writer should not receive any data
+		})
+
+		t.Run("rotator succeeds", func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("rotated writer errors", func(t *testing.T) {
+				t.Parallel()
+				r := is.New(t)
+
+				var buf1 bytes.Buffer
+
+				writer := RollingWriter{Writer: &buf1, Trigger: fixedTrigger(true), Rotator: fixedRotator(faultyWriter{Err: errWrite})}
+
+				data := []byte("hello")
+				n, err := writer.Write(data)
+				r.True(errors.Is(err, errWrite)) // error should wrap underlying Rotator error
+
+				r.True(n == 0)                 // no bytes should be written
+				r.True(len(buf1.Bytes()) == 0) // original io.Writer should not receive any data
+			})
+
+			t.Run("rotated writer succeeds", func(t *testing.T) {
+				t.Parallel()
+				r := is.New(t)
+
+				var buf1, buf2 bytes.Buffer
+
+				writer := RollingWriter{Writer: &buf1, Trigger: fixedTrigger(true), Rotator: fixedRotator(&buf2)}
+
+				data := []byte("hello")
+				n, err := writer.Write(data)
+				r.NoErr(err) // should not be any error
+
+				r.True(len(buf1.Bytes()) == 0) // original io.Writer should not receive any data
+
+				r.True(n == len(data))                  // all bytes should be written
+				r.True(n == len(buf2.Bytes()))          // bytes should be written to rotated io.Writer
+				r.True(bytes.Equal(buf2.Bytes(), data)) // bytes written to rotated io.Writer should be same as given bytes
+			})
+		})
+	})
 }
 
-func SpecRollingWriterWrite(s *testcase.Spec) {
-	subject := func(t *testcase.T, p []byte) (int, error) {
-		writer := t.I(`writer`).(*RollingWriter)
-		return writer.Write(p)
+func TestRollingWriter_Close(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closed writer", func(t *testing.T) {
+		t.Parallel()
+		r := is.New(t)
+
+		writer := RollingWriter{}
+		err := writer.Close()
+		r.NoErr(err) // should not be any error
+
+		err = writer.Close()
+		r.True(errors.Is(err, ErrClosed)) // error should wrap ErrClosed
+	})
+
+	t.Run("writer not io closer", func(t *testing.T) {
+		t.Parallel()
+		r := is.New(t)
+
+		var buf bytes.Buffer
+
+		writer := RollingWriter{Writer: &buf}
+
+		err := writer.Close()
+		r.NoErr(err) // should not be any error
+	})
+
+	t.Run("writer is io closer", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("writer close errors", func(t *testing.T) {
+			t.Parallel()
+			r := is.New(t)
+
+			var buf bytes.Buffer
+
+			writer := RollingWriter{Writer: writeCloser{Writer: &buf, Closer: faultyCloser{Err: errClose}}}
+
+			err := writer.Close()
+			r.True(errors.Is(err, errClose)) // error should wrap underlying io.WriteCloser error
+		})
+
+		t.Run("writer close succeeds", func(t *testing.T) {
+			t.Parallel()
+			r := is.New(t)
+
+			var buf bytes.Buffer
+
+			writer := RollingWriter{Writer: writeCloser{Writer: &buf, Closer: noopCloser{}}}
+
+			err := writer.Close()
+			r.NoErr(err) // should not be any error
+		})
+	})
+}
+
+func fixedTrigger(value bool) Trigger {
+	return &TriggerMock{
+		TriggerFunc: func(_ io.Writer, _ []byte) (bool, error) {
+			return value, nil
+		},
 	}
-
-	s.Let(`writer`, func(t *testcase.T) interface{} {
-		underlyingWriter, _ := t.I(`underlyingWriter`).(io.Writer)
-		trigger, _ := t.I(`trigger`).(Trigger)
-		rotator, _ := t.I(`rotator`).(Rotator)
-		return &RollingWriter{
-			Writer:  underlyingWriter,
-			Trigger: trigger,
-			Rotator: rotator,
-		}
-	})
-
-	s.When(`closed`, func(s *testcase.Spec) {
-		s.Before(func(t *testcase.T) {
-			writer := t.I(`writer`).(*RollingWriter)
-			_ = writer.Close()
-		})
-
-		s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return io.Writer(nil) })
-		s.Let(`trigger`, func(t *testcase.T) interface{} { return Trigger(nil) })
-		s.Let(`rotator`, func(t *testcase.T) interface{} { return Rotator(nil) })
-
-		s.Then(`fails with ErrClosed`, func(t *testcase.T) {
-			n, err := subject(t, nil)
-
-			if !errors.Is(err, ErrClosed) {
-				t.Errorf("got err = %v, want err = %v", err, ErrClosed)
-			}
-
-			if n != 0 {
-				t.Errorf("got n = %v, want n = %v", n, 0)
-			}
-		})
-	})
-
-	s.When(`trigger errors`, func(s *testcase.Spec) {
-		s.Let(`trigger`, func(t *testcase.T) interface{} { return faultyTrigger{} })
-
-		s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return io.Writer(nil) })
-		s.Let(`rotator`, func(t *testcase.T) interface{} { return Rotator(nil) })
-
-		s.Then(`fails with error wrapping underlying error`, func(t *testcase.T) {
-			n, err := subject(t, nil)
-
-			if !errors.Is(err, errTrigger) {
-				t.Errorf("got err = %v, want err = %v", err, errTrigger)
-			}
-
-			if n != 0 {
-				t.Errorf("got n = %v, want n = %v", n, 0)
-			}
-		})
-	})
-
-	s.When(`trigger returns false`, func(s *testcase.Spec) {
-		s.Let(`trigger`, func(t *testcase.T) interface{} { return falseTrigger{} })
-
-		s.And(`underlying writer errors`, func(s *testcase.Spec) {
-			s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return faultyWriter{} })
-
-			s.Let(`rotator`, func(t *testcase.T) interface{} { return Rotator(nil) })
-
-			s.Then(`fails with error wrapping underlying error`, func(t *testcase.T) {
-				n, err := subject(t, nil)
-
-				if !errors.Is(err, errWriter) {
-					t.Errorf("got err = %v, want err = %v", err, errWriter)
-				}
-
-				if n != 0 {
-					t.Errorf("got n = %v, want n = %v", n, 0)
-				}
-			})
-		})
-
-		s.And(`underlying writer buffers`, func(s *testcase.Spec) {
-			s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return &bytes.Buffer{} })
-
-			s.Let(`rotator`, func(t *testcase.T) interface{} { return Rotator(nil) })
-
-			s.Then(`succeeds with correct number of bytes`, func(t *testcase.T) {
-				bs := []byte(`hello`)
-				n, err := subject(t, bs)
-
-				if err != nil {
-					t.Errorf("got err = %v, want err = %v", err, nil)
-				}
-
-				if n != len(bs) {
-					t.Errorf("got n = %v, want n = %v", n, len(bs))
-				}
-
-				underlyingWriter := t.I(`underlyingWriter`).(*bytes.Buffer)
-
-				if !bytes.Equal(underlyingWriter.Bytes(), bs) {
-					t.Errorf("got bytes = %v, want bytes = %v", underlyingWriter.Bytes(), bs)
-				}
-			})
-		})
-	})
-
-	s.When(`trigger returns true`, func(s *testcase.Spec) {
-		s.Let(`trigger`, func(t *testcase.T) interface{} { return trueTrigger{} })
-
-		s.And(`rotator errors`, func(s *testcase.Spec) {
-			s.Let(`rotator`, func(t *testcase.T) interface{} { return faultyRotator{} })
-
-			s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return io.Writer(nil) })
-
-			s.Then(`fails with error wrapping underlying error`, func(t *testcase.T) {
-				n, err := subject(t, nil)
-
-				if !errors.Is(err, errRotate) {
-					t.Errorf("got err = %v, want err = %v", err, errRotate)
-				}
-
-				if n != 0 {
-					t.Errorf("got n = %v, want n = %v", n, 0)
-				}
-			})
-		})
-
-		s.And(`rotator successfully rotates`, func(s *testcase.Spec) {
-			s.Let(`rotator`, func(t *testcase.T) interface{} { return noopRotator{} })
-
-			s.And(`underlying writer errors`, func(s *testcase.Spec) {
-				s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return faultyWriter{} })
-
-				s.Then(`fails with error wrapping underlying error`, func(t *testcase.T) {
-					n, err := subject(t, nil)
-
-					if !errors.Is(err, errWriter) {
-						t.Errorf("got err = %v, want err = %v", err, errWriter)
-					}
-
-					if n != 0 {
-						t.Errorf("got n = %v, want n = %v", n, 0)
-					}
-				})
-			})
-
-			s.And(`underlying writer buffers`, func(s *testcase.Spec) {
-				s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return &bytes.Buffer{} })
-
-				s.Then(`succeeds with correct number of bytes`, func(t *testcase.T) {
-					bs := []byte(`hello`)
-					n, err := subject(t, bs)
-
-					if err != nil {
-						t.Errorf("got err = %v, want err = %v", err, nil)
-					}
-
-					if n != len(bs) {
-						t.Errorf("got n = %v, want n = %v", n, len(bs))
-					}
-
-					underlyingWriter := t.I(`underlyingWriter`).(*bytes.Buffer)
-
-					if !bytes.Equal(underlyingWriter.Bytes(), bs) {
-						t.Errorf("got bytes = %v, want bytes = %v", underlyingWriter.Bytes(), bs)
-					}
-				})
-			})
-		})
-	})
 }
 
-func SpecRollingWriterClose(s *testcase.Spec) {
-	subject := func(t *testcase.T) error {
-		writer := t.I(`writer`).(*RollingWriter)
-		return writer.Close()
+func faultyTrigger(err error) Trigger {
+	return &TriggerMock{
+		TriggerFunc: func(_ io.Writer, _ []byte) (bool, error) {
+			return false, err
+		},
 	}
-
-	s.Let(`writer`, func(t *testcase.T) interface{} {
-		underlyingWriter, _ := t.I(`underlyingWriter`).(io.Writer)
-		trigger, _ := t.I(`trigger`).(Trigger)
-		rotator, _ := t.I(`rotator`).(Rotator)
-		return &RollingWriter{
-			Writer:  underlyingWriter,
-			Trigger: trigger,
-			Rotator: rotator,
-		}
-	})
-
-	s.When(`closed`, func(s *testcase.Spec) {
-		s.Before(func(t *testcase.T) {
-			writer := t.I(`writer`).(*RollingWriter)
-			_ = writer.Close()
-		})
-
-		s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return io.Writer(nil) })
-		s.Let(`trigger`, func(t *testcase.T) interface{} { return Trigger(nil) })
-		s.Let(`rotator`, func(t *testcase.T) interface{} { return Rotator(nil) })
-
-		s.Then(`fails with ErrClosed`, func(t *testcase.T) {
-			err := subject(t)
-
-			if !errors.Is(err, ErrClosed) {
-				t.Errorf("got err = %v, want err = %v", err, ErrClosed)
-			}
-		})
-	})
-
-	s.When(`open`, func(s *testcase.Spec) {
-		s.Let(`trigger`, func(t *testcase.T) interface{} { return Trigger(nil) })
-		s.Let(`rotator`, func(t *testcase.T) interface{} { return Rotator(nil) })
-
-		s.And(`underlying writer is not io.Closer`, func(s *testcase.Spec) {
-			s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return noopWriter{} })
-
-			s.Then(`succeeds with no error`, func(t *testcase.T) {
-				err := subject(t)
-
-				if err != nil {
-					t.Errorf("got err = %v, want err = %v", err, nil)
-				}
-			})
-		})
-
-		s.And(`underlying writer is faulty io.Closer`, func(s *testcase.Spec) {
-			s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return writeCloser{Writer: noopWriter{}, Closer: faultyCloser{}} })
-
-			s.Then(`fails with underlying error`, func(t *testcase.T) {
-				err := subject(t)
-
-				if !errors.Is(err, errClose) {
-					t.Errorf("got err = %v, want err = %v", err, errClose)
-				}
-			})
-		})
-
-		s.And(`underlying writer is correct io.Closer`, func(s *testcase.Spec) {
-			s.Let(`underlyingWriter`, func(t *testcase.T) interface{} { return writeCloser{Writer: noopWriter{}, Closer: noopCloser{}} })
-
-			s.Then(`succeeds with no error`, func(t *testcase.T) {
-				err := subject(t)
-
-				if err != nil {
-					t.Errorf("got err = %v, want err = %v", err, nil)
-				}
-			})
-		})
-	})
 }
 
-type falseTrigger struct {
+func fixedRotator(value io.Writer) Rotator {
+	return &RotatorMock{
+		RotateFunc: func(_ io.Writer) (io.Writer, error) {
+			return value, nil
+		},
+	}
 }
 
-func (t falseTrigger) Trigger(_ io.Writer, _ []byte) (bool, error) {
-	return false, nil
+func faultyRotator(err error) Rotator {
+	return &RotatorMock{
+		RotateFunc: func(w io.Writer) (io.Writer, error) {
+			return w, err
+		},
+	}
 }
 
-type trueTrigger struct {
+type writeCloser struct {
+	io.Writer
+	io.Closer
 }
-
-func (t trueTrigger) Trigger(_ io.Writer, _ []byte) (bool, error) {
-	return true, nil
-}
-
-const errTrigger = testErr("err trigger")
-
-type faultyTrigger struct {
-}
-
-func (t faultyTrigger) Trigger(_ io.Writer, _ []byte) (bool, error) {
-	return false, errTrigger
-}
-
-type noopRotator struct {
-}
-
-func (t noopRotator) Rotate(w io.Writer) (io.Writer, error) {
-	return w, nil
-}
-
-const errRotate = testErr("err rotate")
-
-type faultyRotator struct {
-}
-
-func (t faultyRotator) Rotate(_ io.Writer) (io.Writer, error) {
-	return nil, errRotate
-}
-
-type noopWriter struct {
-}
-
-func (t noopWriter) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-
-const errWriter = testErr("err writer")
 
 type faultyWriter struct {
+	Err error
 }
 
-func (t faultyWriter) Write(_ []byte) (int, error) {
-	return 0, errWriter
+func (w faultyWriter) Write(_ []byte) (int, error) {
+	return 0, w.Err
+}
+
+type testErr string
+
+func (e testErr) Error() string {
+	return string(e)
+}
+
+type faultyCloser struct {
+	Err error
+}
+
+func (c faultyCloser) Close() error {
+	return c.Err
 }
 
 type noopCloser struct {
@@ -327,23 +250,9 @@ func (c noopCloser) Close() error {
 	return nil
 }
 
-const errClose = testErr("err close")
-
-type faultyCloser struct {
-	io.Writer
-}
-
-func (c faultyCloser) Close() error {
-	return errClose
-}
-
-type writeCloser struct {
-	io.Writer
-	io.Closer
-}
-
-type testErr string
-
-func (e testErr) Error() string {
-	return string(e)
-}
+const (
+	errTrigger testErr = "err trigger"
+	errRotate  testErr = "err rotate"
+	errWrite   testErr = "err write"
+	errClose   testErr = "err close"
+)
